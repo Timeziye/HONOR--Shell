@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Template, AppView, CanvasItem, ScreenshotItem, BgSettings, BackgroundType } from '../types';
-import { Plus, Trash2, Edit2, Smartphone, ImageIcon, Download, Loader2, Image as ImageIconLucide, ChevronDown, ChevronUp, Settings2, LayoutGrid, Layers, ImagePlus, X, RotateCcw, CheckCircle2 } from 'lucide-react';
+import { Plus, Trash2, Edit2, Smartphone, ImageIcon, Download, Loader2, Image as ImageIconLucide, ChevronDown, ChevronUp, Settings2, LayoutGrid, Layers, ImagePlus, X, RotateCcw, CheckCircle2, Check } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { SliderControl } from '../components/ui/SliderControl';
 
@@ -23,7 +23,6 @@ interface DashboardProps {
 
 /**
  * 优化大图片，防止内存崩溃或 Canvas 渲染失败
- * 如果宽高超过 maxDim，则等比缩放到 maxDim 以内
  */
 const optimizeImage = async (dataUrl: string, maxDim: number = 2000): Promise<string> => {
   return new Promise((resolve) => {
@@ -41,7 +40,6 @@ const optimizeImage = async (dataUrl: string, maxDim: number = 2000): Promise<st
           height = maxDim;
         }
       } else {
-        // 如果图片本身很小，直接返回原图
         resolve(dataUrl);
         return;
       }
@@ -55,12 +53,44 @@ const optimizeImage = async (dataUrl: string, maxDim: number = 2000): Promise<st
         return;
       }
       ctx.drawImage(img, 0, 0, width, height);
-      // 导出中等质量的 JPEG 以进一步节省内存
       resolve(canvas.toDataURL('image/jpeg', 0.85));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
   });
+};
+
+/**
+ * 适配 APK 保存策略：直接存储到本地磁盘
+ */
+const saveToDevice = async (dataUrl: string, fileName: string) => {
+  const win = window as any;
+  
+  // 1. 如果是在定制的 APK WebView 环境中，尝试调用原生注入的 Bridge
+  if (win.Android && win.Android.saveImage) {
+    // 假设原生方法接受 base64 字符串（不含前缀）和文件名
+    const base64Data = dataUrl.split(',')[1];
+    win.Android.saveImage(base64Data, fileName);
+    return true;
+  }
+  
+  // 2. 如果是 iOS WebView 或其他支持 MessageHandlers 的环境
+  if (win.webkit && win.webkit.messageHandlers && win.webkit.messageHandlers.saveImage) {
+    win.webkit.messageHandlers.saveImage.postMessage({
+      data: dataUrl.split(',')[1],
+      name: fileName
+    });
+    return true;
+  }
+
+  // 3. 浏览器兜底方案：传统的 <a> 标签下载
+  const link = document.createElement('a');
+  link.download = fileName;
+  link.href = dataUrl;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  return true;
 };
 
 // 子组件：用于处理每个网格项的比例加载和文字渲染
@@ -178,6 +208,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   onEnterCanvasEditor
 }) => {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [isControlsExpanded, setIsControlsExpanded] = useState(false);
   const [isLibraryExpanded, setIsLibraryExpanded] = useState(true);
   
@@ -197,7 +228,6 @@ const Dashboard: React.FC<DashboardProps> = ({
         const reader = new FileReader();
         reader.onload = async (evt) => {
           if (evt.target?.result) {
-            // 优化图片后再存入状态
             const optimized = await optimizeImage(evt.target.result as string, 1600);
             setScreenshotItems(prev => [...prev, {
               id: Math.random().toString(36).substr(2, 9),
@@ -209,7 +239,6 @@ const Dashboard: React.FC<DashboardProps> = ({
         reader.readAsDataURL(file);
       }
     }
-    // 重置 input 以允许再次上传相同文件
     e.target.value = '';
   };
 
@@ -219,7 +248,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       const reader = new FileReader();
       reader.onload = async (evt) => {
         if (evt.target?.result) {
-          // 背景图通常用于模糊，2000px 绰绰有余
           const optimized = await optimizeImage(evt.target.result as string, 2000);
           updateBgSetting('customSrc', optimized);
           setIsControlsExpanded(true);
@@ -315,22 +343,26 @@ const Dashboard: React.FC<DashboardProps> = ({
   };
 
   const handleDownloadAll = async () => {
-    for (const item of screenshotItems) {
-      for (const template of selectedTemplates) {
-        const res = item.results[template.id];
-        if (res) {
-          try {
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      for (const item of screenshotItems) {
+        for (const template of selectedTemplates) {
+          const res = item.results[template.id];
+          if (res) {
             const finalData = await getFinalCompositeImage(res.base64, bgSettings.customSrc || item.src, res.textConfig, res.bgType);
-            const link = document.createElement('a');
-            link.download = `HONOR-Shell_${template.name}_${item.id}.png`;
-            link.href = finalData;
-            link.click();
+            const fileName = `HONOR-Shell_${template.name.replace(/\s+/g, '_')}_${item.id}.png`;
+            await saveToDevice(finalData, fileName);
+            // 稍作停顿，避免 Bridge 负载过重或浏览器阻止连续下载
             await new Promise(r => setTimeout(r, 400));
-          } catch (err) {
-            console.error("Export failed for item:", item.id, err);
           }
         }
       }
+    } catch (err) {
+      console.error("Export failed:", err);
+      alert("保存失败，请重试");
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -343,7 +375,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       new Promise<HTMLImageElement>(r => { const img = new Image(); img.onload = () => r(img); img.src = bgSrc; })
     ]);
     
-    // Fix: isBlurMode was not defined. Defining it based on currentBgType.
     const currentBgType = itemBgType || bgSettings.type;
     const isBlurMode = currentBgType === 'blur';
     const paddingRatio = isBlurMode ? 0.5 : 0;
@@ -351,7 +382,6 @@ const Dashboard: React.FC<DashboardProps> = ({
     canvas.width = Math.round(shellImg.width * (1 + paddingRatio));
     canvas.height = Math.round(shellImg.height * (1 + paddingRatio));
     
-    // 限制最大画布尺寸，防止导出崩溃
     const MAX_CANVAS = 8192;
     if (canvas.width > MAX_CANVAS || canvas.height > MAX_CANVAS) {
       const scale = MAX_CANVAS / Math.max(canvas.width, canvas.height);
@@ -362,7 +392,6 @@ const Dashboard: React.FC<DashboardProps> = ({
 
     if (isBlurMode) {
       ctx.save();
-      // 在 Canvas 上应用模糊滤镜非常消耗内存，对于超大图需谨慎
       ctx.filter = `blur(${bgSettings.blur}px) brightness(0.9)`;
       const screenAspect = screenImg.width / screenImg.height;
       const canvasAspect = canvas.width / canvas.height;
@@ -563,7 +592,25 @@ const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   )}
                   <div className="flex flex-col gap-2 mt-2">
-                    <Button fullWidth variant="primary" onClick={handleDownloadAll} disabled={screenshotItems.length === 0 || isProcessing} className="rounded-full h-12 shadow-lg shadow-indigo-200"><Download size={18} className="mr-2" /> 保存全部 ({displayGrid.filter(d => d.result).length})</Button>
+                    <Button 
+                      fullWidth 
+                      variant="primary" 
+                      onClick={handleDownloadAll} 
+                      disabled={screenshotItems.length === 0 || isProcessing || isSaving} 
+                      className="rounded-full h-12 shadow-lg shadow-indigo-200 relative overflow-hidden"
+                    >
+                      {isSaving ? (
+                        <>
+                          <Loader2 size={18} className="mr-2 animate-spin" />
+                          正在保存本地...
+                        </>
+                      ) : (
+                        <>
+                          <Download size={18} className="mr-2" /> 
+                          一键保存至设备 ({displayGrid.filter(d => d.result).length})
+                        </>
+                      )}
+                    </Button>
                     <div className="flex gap-2">
                       <Button fullWidth variant="secondary" onClick={() => fileInputRef.current?.click()} className="rounded-full h-10 bg-white border border-slate-200 flex-1"><Plus size={16} className="mr-2" /> 添加截图<input type="file" ref={fileInputRef} accept="image/*" multiple className="hidden" onChange={handleScreenshotUpload} /></Button>
                       <Button variant="danger" onClick={clearAllScreenshots} className="rounded-full h-10 px-4" title="清空列表"><Trash2 size={16} /></Button>
