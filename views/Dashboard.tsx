@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Template, AppView, CanvasItem, ScreenshotItem, BgSettings, BackgroundType } from '../types';
-import { Plus, Trash2, Edit2, Smartphone, ImageIcon, Download, Loader2, Image as ImageIconLucide, ChevronDown, ChevronUp, Settings2, LayoutGrid, Layers, ImagePlus, X, RotateCcw, CheckCircle2, Check } from 'lucide-react';
+import { Plus, Trash2, Edit2, Smartphone, ImageIcon, Download, Loader2, Image as ImageIconLucide, ChevronDown, ChevronUp, Settings2, LayoutGrid, Layers, ImagePlus, X, RotateCcw, CheckCircle2 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { SliderControl } from '../components/ui/SliderControl';
 
@@ -22,12 +22,15 @@ interface DashboardProps {
 }
 
 /**
- * 优化大图片，防止内存崩溃或 Canvas 渲染失败
+ * 优化大图片，防止内存崩溃。
+ * 使用 Blob 减少中间 DataURL 转换
  */
-const optimizeImage = async (dataUrl: string, maxDim: number = 2000): Promise<string> => {
+const optimizeImage = async (file: File | Blob, maxDim: number = 2000): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
+    const url = URL.createObjectURL(file);
     img.onload = () => {
+      URL.revokeObjectURL(url);
       let width = img.width;
       let height = img.height;
 
@@ -39,9 +42,6 @@ const optimizeImage = async (dataUrl: string, maxDim: number = 2000): Promise<st
           width = (width / height) * maxDim;
           height = maxDim;
         }
-      } else {
-        resolve(dataUrl);
-        return;
       }
 
       const canvas = document.createElement('canvas');
@@ -49,41 +49,35 @@ const optimizeImage = async (dataUrl: string, maxDim: number = 2000): Promise<st
       canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        resolve(dataUrl);
+        resolve("");
         return;
       }
       ctx.drawImage(img, 0, 0, width, height);
+      // 导出为 JPEG 以节省内存空间，尤其是作为背景时
       resolve(canvas.toDataURL('image/jpeg', 0.85));
     };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve("");
+    };
+    img.src = url;
   });
 };
 
 /**
- * 适配 APK 保存策略：直接存储到本地磁盘
+ * 适配 APK 保存策略
  */
 const saveToDevice = async (dataUrl: string, fileName: string) => {
   const win = window as any;
-  
-  // 1. 如果是在定制的 APK WebView 环境中，尝试调用原生注入的 Bridge
   if (win.Android && win.Android.saveImage) {
-    // 假设原生方法接受 base64 字符串（不含前缀）和文件名
     const base64Data = dataUrl.split(',')[1];
     win.Android.saveImage(base64Data, fileName);
     return true;
   }
-  
-  // 2. 如果是 iOS WebView 或其他支持 MessageHandlers 的环境
   if (win.webkit && win.webkit.messageHandlers && win.webkit.messageHandlers.saveImage) {
-    win.webkit.messageHandlers.saveImage.postMessage({
-      data: dataUrl.split(',')[1],
-      name: fileName
-    });
+    win.webkit.messageHandlers.saveImage.postMessage({ data: dataUrl.split(',')[1], name: fileName });
     return true;
   }
-
-  // 3. 浏览器兜底方案：传统的 <a> 标签下载
   const link = document.createElement('a');
   link.download = fileName;
   link.href = dataUrl;
@@ -93,7 +87,6 @@ const saveToDevice = async (dataUrl: string, fileName: string) => {
   return true;
 };
 
-// 子组件：用于处理每个网格项的比例加载和文字渲染
 const GridItem: React.FC<{
   entry: any;
   isSelected: boolean;
@@ -103,7 +96,6 @@ const GridItem: React.FC<{
   onEdit: () => void;
 }> = ({ entry, isSelected, bgSettings, onSelect, onRemove, onEdit }) => {
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
-  
   const currentBgType = entry.result?.bgType || bgSettings.type;
   const isBlurMode = currentBgType === 'blur';
 
@@ -115,29 +107,18 @@ const GridItem: React.FC<{
       <div className="absolute inset-0 flex items-center justify-center p-2">
         <div 
           className="relative transition-all duration-300"
-          style={{ 
-            aspectRatio: aspectRatio || 'auto',
-            height: '100%',
-            maxWidth: '100%',
-            containerType: 'inline-size' 
-          }}
+          style={{ aspectRatio: aspectRatio || 'auto', height: '100%', maxWidth: '100%', containerType: 'inline-size' }}
         >
-          {/* 背景层 */}
           {isBlurMode && (entry.itemSrc || bgSettings.customSrc) && (
             <div className="absolute inset-0 z-0 overflow-hidden rounded-lg">
               <img 
                 src={bgSettings.customSrc || entry.itemSrc} 
                 className="w-full h-full object-cover" 
-                style={{ 
-                  filter: `blur(${bgSettings.blur}px) brightness(0.9)`, 
-                  transform: `scale(${bgSettings.scale / 100}) translate(${bgSettings.xOffset}%, ${bgSettings.yOffset}%)` 
-                }} 
+                style={{ filter: `blur(${bgSettings.blur}px) brightness(0.9)`, transform: `scale(${bgSettings.scale / 100}) translate(${bgSettings.xOffset}%, ${bgSettings.yOffset}%)` }} 
                 alt=""
               />
             </div>
           )}
-
-          {/* 机壳内容层 */}
           <div className={`relative z-10 w-full h-full flex items-center justify-center ${isBlurMode ? 'p-[16.67%]' : ''}`}>
             {entry.result ? (
               <img 
@@ -150,23 +131,15 @@ const GridItem: React.FC<{
               <Loader2 className="animate-spin text-indigo-600 w-6 h-6" />
             )}
           </div>
-
-          {/* 文字图层 */}
           {entry.result?.textConfig && (
             <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
               <div 
                 style={{ 
-                  position: 'absolute',
-                  left: `${entry.result.textConfig.x}%`, 
-                  top: `${entry.result.textConfig.y}%`, 
-                  color: entry.result.textConfig.color, 
-                  fontSize: `${entry.result.textConfig.fontSize}cqw`, 
-                  transform: 'translate(-50%, -50%)', 
-                  textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+                  position: 'absolute', left: `${entry.result.textConfig.x}%`, top: `${entry.result.textConfig.y}%`, 
+                  color: entry.result.textConfig.color, fontSize: `${entry.result.textConfig.fontSize}cqw`, 
+                  transform: 'translate(-50%, -50%)', textShadow: '0 2px 4px rgba(0,0,0,0.5)',
                   writingMode: entry.result.textConfig.isVertical ? 'vertical-rl' : 'horizontal-tb',
-                  whiteSpace: 'nowrap',
-                  fontWeight: 'bold',
-                  textAlign: 'center'
+                  whiteSpace: 'nowrap', fontWeight: 'bold', textAlign: 'center'
                 }}
               >
                 {entry.result.textConfig.text}
@@ -175,7 +148,6 @@ const GridItem: React.FC<{
           )}
         </div>
       </div>
-
       {isSelected && <div className="absolute top-2 left-2 z-30"><CheckCircle2 size={18} className="text-indigo-600 fill-white" /></div>}
       {isSelected && entry.result && (
         <div className="absolute bottom-2 left-2 right-2 z-40 animate-in slide-in-from-bottom-2 duration-300">
@@ -184,7 +156,6 @@ const GridItem: React.FC<{
           </button>
         </div>
       )}
-      
       <div className="absolute top-2 right-2 flex gap-1 z-30 opacity-0 group-hover:opacity-100 transition-opacity">
         <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="p-1.5 bg-red-500 text-white rounded-lg shadow-lg hover:scale-110 transition-transform"><X size={14} /></button>
       </div>
@@ -193,86 +164,53 @@ const GridItem: React.FC<{
 };
 
 const Dashboard: React.FC<DashboardProps> = ({ 
-  templates, 
-  selectedTemplates,
-  screenshotItems,
-  setScreenshotItems,
-  bgSettings,
-  setBgSettings,
-  onUpdateBgType,
-  onToggleTemplate,
-  onCreateNew, 
-  onDeleteTemplate,
-  onEditTemplate,
-  onSetView,
-  onEnterCanvasEditor
+  templates, selectedTemplates, screenshotItems, setScreenshotItems, bgSettings, setBgSettings, onUpdateBgType, onToggleTemplate, onCreateNew, onDeleteTemplate, onEditTemplate, onSetView, onEnterCanvasEditor
 }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isControlsExpanded, setIsControlsExpanded] = useState(false);
   const [isLibraryExpanded, setIsLibraryExpanded] = useState(true);
-  
   const [selectedGridKey, setSelectedGridKey] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgFileInputRef = useRef<HTMLInputElement>(null);
 
-  const updateBgSetting = (key: keyof BgSettings, value: any) => {
-    setBgSettings(prev => ({ ...prev, [key]: value }));
-  };
+  const updateBgSetting = (key: keyof BgSettings, value: any) => { setBgSettings(prev => ({ ...prev, [key]: value })); };
 
   const handleScreenshotUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
     if (files.length > 0) {
       for (const file of files) {
-        const reader = new FileReader();
-        reader.onload = async (evt) => {
-          if (evt.target?.result) {
-            const optimized = await optimizeImage(evt.target.result as string, 1600);
-            setScreenshotItems(prev => [...prev, {
-              id: Math.random().toString(36).substr(2, 9),
-              src: optimized,
-              results: {}
-            }]);
-          }
-        };
-        reader.readAsDataURL(file);
+        const optimized = await optimizeImage(file, 1600);
+        if (optimized) {
+          setScreenshotItems(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), src: optimized, results: {} }]);
+        }
       }
     }
     e.target.value = '';
   };
 
-  const handleBgUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBgUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = async (evt) => {
-        if (evt.target?.result) {
-          const optimized = await optimizeImage(evt.target.result as string, 2000);
-          updateBgSetting('customSrc', optimized);
-          setIsControlsExpanded(true);
-        }
-      };
-      reader.readAsDataURL(file);
+      const optimized = await optimizeImage(file, 2000);
+      if (optimized) {
+        updateBgSetting('customSrc', optimized);
+        setIsControlsExpanded(true);
+      }
     }
     e.target.value = '';
   };
 
   const clearCustomBg = () => updateBgSetting('customSrc', null);
-
   const removeScreenshot = (id: string) => {
     setScreenshotItems(prev => prev.filter(item => item.id !== id));
     if (selectedGridKey?.startsWith(id)) setSelectedGridKey(null);
   };
-
-  const clearAllScreenshots = () => {
-    setScreenshotItems([]);
-    setSelectedGridKey(null);
-  };
+  const clearAllScreenshots = () => { setScreenshotItems([]); setSelectedGridKey(null); };
 
   useEffect(() => {
     if (selectedTemplates.length === 0 || screenshotItems.length === 0) return;
-    
     const findNextTask = () => {
       for (const item of screenshotItems) {
         for (const template of selectedTemplates) {
@@ -281,7 +219,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       }
       return null;
     };
-
     const nextTask = findNextTask();
     if (nextTask && !isProcessing) processTask(nextTask.item, nextTask.template);
   }, [screenshotItems, selectedTemplates, isProcessing]);
@@ -291,19 +228,10 @@ const Dashboard: React.FC<DashboardProps> = ({
     try {
       const result = await generateShellImage(item.src, template);
       setScreenshotItems(prev => prev.map(si => {
-        if (si.id === item.id) {
-          return {
-            ...si,
-            results: { ...si.results, [template.id]: { base64: result } }
-          };
-        }
+        if (si.id === item.id) return { ...si, results: { ...si.results, [template.id]: { base64: result } } };
         return si;
       }));
-    } catch (err) {
-      console.error("Task failed:", err);
-    } finally {
-      setIsProcessing(false);
-    }
+    } catch (err) { console.error("Task failed:", err); } finally { setIsProcessing(false); }
   };
 
   const generateShellImage = async (screenshotSrc: string, template: Template): Promise<string> => {
@@ -315,36 +243,30 @@ const Dashboard: React.FC<DashboardProps> = ({
       new Promise<HTMLImageElement>(r => { const img = new Image(); img.onload = () => r(img); img.src = screenshotSrc; })
     ]);
     const rotation = template.rotation || 0;
-    const normalizedRotation = rotation % 360;
-    const isHorizontal = (normalizedRotation / 90) % 2 !== 0;
+    const isHorizontal = (rotation / 90) % 2 !== 0;
     canvas.width = isHorizontal ? frameImg.naturalHeight : frameImg.naturalWidth;
     canvas.height = isHorizontal ? frameImg.naturalWidth : frameImg.naturalHeight;
-    const config = template.config;
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.rotate((normalizedRotation * Math.PI) / 180);
+    ctx.rotate((rotation * Math.PI) / 180);
     ctx.translate(-frameImg.naturalWidth / 2, -frameImg.naturalHeight / 2);
+    const config = template.config;
     ctx.save();
     ctx.beginPath();
     if (typeof (ctx as any).roundRect === 'function') (ctx as any).roundRect(config.x, config.y, config.width, config.height, config.borderRadius);
     else ctx.rect(config.x, config.y, config.width, config.height);
     ctx.clip();
-    const targetIsPortrait = config.height > config.width;
-    const screenIsPortrait = screenImg.naturalHeight > screenImg.naturalWidth;
-    if (targetIsPortrait !== screenIsPortrait) {
-      ctx.translate(config.x + config.width / 2, config.y + config.height / 2);
-      ctx.rotate(Math.PI / 2);
+    if ((config.height > config.width) !== (screenImg.naturalHeight > screenImg.naturalWidth)) {
+      ctx.translate(config.x + config.width / 2, config.y + config.height / 2); ctx.rotate(Math.PI / 2);
       ctx.drawImage(screenImg, -config.height / 2, -config.width / 2, config.height, config.width);
     } else ctx.drawImage(screenImg, config.x, config.y, config.width, config.height);
     ctx.restore();
-    ctx.drawImage(frameImg, 0, 0);
-    ctx.restore();
+    ctx.drawImage(frameImg, 0, 0); ctx.restore();
     return canvas.toDataURL('image/png');
   };
 
   const handleDownloadAll = async () => {
-    if (isSaving) return;
-    setIsSaving(true);
+    if (isSaving) return; setIsSaving(true);
     try {
       for (const item of screenshotItems) {
         for (const template of selectedTemplates) {
@@ -353,23 +275,14 @@ const Dashboard: React.FC<DashboardProps> = ({
             const finalData = await getFinalCompositeImage(res.base64, bgSettings.customSrc || item.src, res.textConfig, res.bgType);
             const fileName = `HONOR-Shell_${template.name.replace(/\s+/g, '_')}_${item.id}.png`;
             await saveToDevice(finalData, fileName);
-            // 稍作停顿，避免 Bridge 负载过重或浏览器阻止连续下载
-            await new Promise(r => setTimeout(r, 400));
+            await new Promise(r => setTimeout(r, 600));
           }
         }
       }
-    } catch (err) {
-      console.error("Export failed:", err);
-      alert("保存失败，请重试");
-    } finally {
-      setIsSaving(false);
-    }
+    } catch (err) { alert("保存失败，请重试"); } finally { setIsSaving(false); }
   };
 
   const getFinalCompositeImage = async (shellResult: string, bgSrc: string, textConfig?: any, itemBgType?: BackgroundType): Promise<string> => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return "";
     const [shellImg, screenImg] = await Promise.all([
       new Promise<HTMLImageElement>(r => { const img = new Image(); img.onload = () => r(img); img.src = shellResult; }),
       new Promise<HTMLImageElement>(r => { const img = new Image(); img.onload = () => r(img); img.src = bgSrc; })
@@ -379,57 +292,67 @@ const Dashboard: React.FC<DashboardProps> = ({
     const isBlurMode = currentBgType === 'blur';
     const paddingRatio = isBlurMode ? 0.5 : 0;
 
-    canvas.width = Math.round(shellImg.width * (1 + paddingRatio));
-    canvas.height = Math.round(shellImg.height * (1 + paddingRatio));
+    let baseWidth = shellImg.width * (1 + paddingRatio);
+    let baseHeight = shellImg.height * (1 + paddingRatio);
     
-    const MAX_CANVAS = 8192;
-    if (canvas.width > MAX_CANVAS || canvas.height > MAX_CANVAS) {
-      const scale = MAX_CANVAS / Math.max(canvas.width, canvas.height);
-      canvas.width *= scale;
-      canvas.height *= scale;
-      ctx.scale(scale, scale);
+    // APK 环境下限制最大分辨率为 4K 以内，兼顾清晰度与稳定性
+    const MAX_CANVAS = 4096;
+    let finalScale = 1.0;
+    if (baseWidth > MAX_CANVAS || baseHeight > MAX_CANVAS) {
+      finalScale = MAX_CANVAS / Math.max(baseWidth, baseHeight);
+      baseWidth *= finalScale;
+      baseHeight *= finalScale;
     }
 
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(baseWidth);
+    canvas.height = Math.round(baseHeight);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return "";
+
     if (isBlurMode) {
-      ctx.save();
-      ctx.filter = `blur(${bgSettings.blur}px) brightness(0.9)`;
-      const screenAspect = screenImg.width / screenImg.height;
-      const canvasAspect = canvas.width / canvas.height;
-      let dW, dH;
-      if (screenAspect > canvasAspect) { dH = canvas.height; dW = dH * screenAspect; } 
-      else { dW = canvas.width; dH = dW / screenAspect; }
-      const scaleFactor = bgSettings.scale / 100; dW *= scaleFactor; dH *= scaleFactor;
-      const dX = (canvas.width - dW) / 2 + (bgSettings.xOffset / 100) * canvas.width;
-      const dY = (canvas.height - dH) / 2 + (bgSettings.yOffset / 100) * canvas.height;
-      ctx.drawImage(screenImg, dX, dY, dW, dH);
-      ctx.restore();
+      // 性能核心优化：通过离屏小画布进行模糊处理
+      const blurCanvas = document.createElement('canvas');
+      const blurFactor = 0.25; // 先缩小到 1/4 进行模糊
+      blurCanvas.width = Math.round(canvas.width * blurFactor);
+      blurCanvas.height = Math.round(canvas.height * blurFactor);
+      const bCtx = blurCanvas.getContext('2d');
+      if (bCtx) {
+        bCtx.filter = `blur(${bgSettings.blur * blurFactor}px) brightness(0.9)`;
+        const sAspect = screenImg.width / screenImg.height;
+        const cAspect = blurCanvas.width / blurCanvas.height;
+        let dW, dH;
+        if (sAspect > cAspect) { dH = blurCanvas.height; dW = dH * sAspect; } 
+        else { dW = blurCanvas.width; dH = dW / sAspect; }
+        const sf = bgSettings.scale / 100; dW *= sf; dH *= sf;
+        const dX = (blurCanvas.width - dW) / 2 + (bgSettings.xOffset / 100) * blurCanvas.width;
+        const dY = (blurCanvas.height - dH) / 2 + (bgSettings.yOffset / 100) * blurCanvas.height;
+        bCtx.drawImage(screenImg, dX, dY, dW, dH);
+        // 将模糊后的小图拉伸填充回主画布
+        ctx.drawImage(blurCanvas, 0, 0, canvas.width, canvas.height);
+      }
     }
-    ctx.drawImage(shellImg, (canvas.width - shellImg.width) / 2, (canvas.height - shellImg.height) / 2);
+    
+    const sWidth = shellImg.width * finalScale;
+    const sHeight = shellImg.height * finalScale;
+    ctx.drawImage(shellImg, (canvas.width - sWidth) / 2, (canvas.height - sHeight) / 2, sWidth, sHeight);
+    
     if (textConfig) {
       ctx.save();
-      ctx.fillStyle = textConfig.color;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.fillStyle = textConfig.color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       const fSize = Math.round((textConfig.fontSize / 100) * (isBlurMode ? canvas.width / 1.5 : canvas.width));
       ctx.font = `bold ${fSize}px sans-serif`;
       ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4;
-      
       const xPos = (textConfig.x / 100) * canvas.width;
       const yPos = (textConfig.y / 100) * canvas.height;
-
       if (textConfig.isVertical) {
         const chars = textConfig.text.split('');
-        const totalHeight = chars.length * fSize * 1.1;
-        const startY = yPos - totalHeight / 2 + fSize / 2;
-        chars.forEach((char, i) => {
-          ctx.fillText(char, xPos, startY + i * fSize * 1.1);
-        });
-      } else {
-        ctx.fillText(textConfig.text, xPos, yPos);
-      }
+        const th = chars.length * fSize * 1.1;
+        chars.forEach((char, i) => ctx.fillText(char, xPos, (yPos - th / 2 + fSize / 2) + i * fSize * 1.1));
+      } else ctx.fillText(textConfig.text, xPos, yPos);
       ctx.restore();
     }
-    return canvas.toDataURL('image/png', 1.0);
+    return canvas.toDataURL('image/png', 0.9);
   };
 
   const handleEditItem = (gridKey: string) => {
@@ -437,27 +360,11 @@ const Dashboard: React.FC<DashboardProps> = ({
     const item = screenshotItems.find(si => si.id === itemId);
     const template = templates.find(t => t.id === templateId);
     if (item && template && item.results[templateId]) {
-      onEnterCanvasEditor({
-        itemId,
-        templateId,
-        image: item.results[templateId]!.base64,
-        templateName: template.name,
-        itemSrc: item.src,
-        initialTextConfig: item.results[templateId]?.textConfig
-      });
+      onEnterCanvasEditor({ itemId, templateId, image: item.results[templateId]!.base64, templateName: template.name, itemSrc: item.src, initialTextConfig: item.results[templateId]?.textConfig });
     }
   };
 
-  const displayGrid = screenshotItems.flatMap(item => 
-    selectedTemplates.map(template => ({
-      itemId: item.id,
-      itemSrc: item.src,
-      templateId: template.id,
-      templateName: template.name,
-      result: item.results[template.id]
-    }))
-  );
-
+  const displayGrid = screenshotItems.flatMap(item => selectedTemplates.map(template => ({ itemId: item.id, itemSrc: item.src, templateId: template.id, templateName: template.name, result: item.results[template.id] })));
   const getActiveBgTypeDisplay = (): BackgroundType => {
     if (selectedGridKey) {
       const [itemId, templateId] = selectedGridKey.split('-');
@@ -466,18 +373,15 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
     return bgSettings.type;
   };
-
   const activeBgType = getActiveBgTypeDisplay();
 
   return (
     <div className="h-full flex flex-col bg-slate-50 overflow-y-auto no-scrollbar touch-pan-y">
       <header className="h-14 border-b flex items-center justify-between px-4 bg-white z-30 shrink-0">
         <div className="flex items-center gap-2 font-bold text-indigo-600 cursor-pointer" onClick={() => onSetView('dashboard')}>
-          <Layers className="w-6 h-6" />
-          <span className="tracking-tight">HONOR-Shell</span>
+          <Layers className="w-6 h-6" /> <span className="tracking-tight">HONOR-Shell</span>
         </div>
       </header>
-
       <section className="bg-white border-b shrink-0 z-20 shadow-sm transition-all duration-300">
         <div className="px-4 py-2 flex justify-between items-center min-h-[48px]">
           <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setIsLibraryExpanded(!isLibraryExpanded)}>
@@ -491,7 +395,6 @@ const Dashboard: React.FC<DashboardProps> = ({
             <Plus size={12} strokeWidth={3} /> 添加模板
           </button>
         </div>
-
         {isLibraryExpanded && (
           <div className="flex overflow-x-auto no-scrollbar gap-3 p-4 pt-0 pb-5 animate-in slide-in-from-top-1 duration-200">
             {templates.length === 0 ? (
@@ -523,20 +426,17 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
         )}
       </section>
-
       <section className="p-6 pb-24 flex-1 flex flex-col">
         {selectedTemplates.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
             <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4"><Smartphone className="w-8 h-8 text-slate-300" /></div>
-            <h3 className="text-slate-800 font-bold mb-1">请选择模版</h3>
-            <p className="text-sm text-slate-400">在上方模版库中点击选中一个或多个模版</p>
+            <h3 className="text-slate-800 font-bold mb-1">请选择模版</h3> <p className="text-sm text-slate-400">在上方模版库中点击选中一个或多个模版</p>
           </div>
         ) : screenshotItems.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-8">
             <label className="w-full max-w-[280px] aspect-[3/4] flex flex-col items-center justify-center border-2 border-dashed border-indigo-200 rounded-[32px] bg-white hover:bg-indigo-50/50 cursor-pointer transition-all shadow-sm group">
                <div className="w-14 h-14 bg-indigo-50 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><ImageIconLucide className="w-6 h-6 text-indigo-500" /></div>
-               <h3 className="text-base font-bold text-slate-800 mb-1">批量上传截图</h3>
-               <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest text-center px-4">支持多选 PNG, JPG</p>
+               <h3 className="text-base font-bold text-slate-800 mb-1">批量上传截图</h3> <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest text-center px-4">支持多选 PNG, JPG</p>
                <input type="file" ref={fileInputRef} accept="image/*" multiple className="hidden" onChange={handleScreenshotUpload} />
             </label>
           </div>
@@ -546,22 +446,10 @@ const Dashboard: React.FC<DashboardProps> = ({
                 {displayGrid.map((entry, index) => {
                   const gridKey = `${entry.itemId}-${entry.templateId}`;
                   const isSelected = selectedGridKey === gridKey;
-
-                  return (
-                    <GridItem 
-                      key={`${gridKey}-${index}`}
-                      entry={entry}
-                      isSelected={isSelected}
-                      bgSettings={bgSettings}
-                      onSelect={() => setSelectedGridKey(isSelected ? null : gridKey)}
-                      onRemove={() => removeScreenshot(entry.itemId)}
-                      onEdit={() => handleEditItem(gridKey)}
-                    />
-                  );
+                  return ( <GridItem key={`${gridKey}-${index}`} entry={entry} isSelected={isSelected} bgSettings={bgSettings} onSelect={() => setSelectedGridKey(isSelected ? null : gridKey)} onRemove={() => removeScreenshot(entry.itemId)} onEdit={() => handleEditItem(gridKey)} /> );
                 })}
                 <button onClick={() => fileInputRef.current?.click()} className="aspect-[3/4] flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50 hover:bg-white transition-all text-slate-400 group">
-                  <Plus className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
-                  <span className="text-[10px] font-bold">继续添加</span>
+                  <Plus className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" /> <span className="text-[10px] font-bold">继续添加</span>
                 </button>
              </div>
              <div className="w-full max-w-[400px] mx-auto flex flex-col gap-4">
@@ -572,11 +460,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                   {bgSettings.type === 'blur' && (
                     <div className="flex flex-col bg-white/50 rounded-3xl border border-slate-100 overflow-hidden animate-in slide-in-from-top-2 duration-300 shadow-sm">
                       <div className="flex items-center bg-white/80 backdrop-blur-sm z-10 border-b border-slate-100">
-                        {bgSettings.customSrc ? (
-                          <button onClick={clearCustomBg} className="flex-1 px-4 py-3 flex items-center justify-center gap-2 text-xs font-bold text-red-500 hover:bg-red-50 transition-colors border-r border-slate-100"><RotateCcw size={14} /><span>恢复默认</span></button>
-                        ) : (
-                          <button onClick={() => bgFileInputRef.current?.click()} className="flex-1 px-4 py-3 flex items-center justify-center gap-2 text-xs font-bold text-slate-500 hover:bg-slate-100/50 transition-colors border-r border-slate-100 group"><ImagePlus size={14} className="text-indigo-500 group-hover:scale-110 transition-transform" /><span>统一背景</span><input type="file" ref={bgFileInputRef} accept="image/*" className="hidden" onChange={handleBgUpload} /></button>
-                        )}
+                        {bgSettings.customSrc ? ( <button onClick={clearCustomBg} className="flex-1 px-4 py-3 flex items-center justify-center gap-2 text-xs font-bold text-red-500 hover:bg-red-50 transition-colors border-r border-slate-100"><RotateCcw size={14} /><span>恢复默认</span></button> ) : ( <button onClick={() => bgFileInputRef.current?.click()} className="flex-1 px-4 py-3 flex items-center justify-center gap-2 text-xs font-bold text-slate-500 hover:bg-slate-100/50 transition-colors border-r border-slate-100 group"><ImagePlus size={14} className="text-indigo-500 group-hover:scale-110 transition-transform" /><span>统一背景</span><input type="file" ref={bgFileInputRef} accept="image/*" className="hidden" onChange={handleBgUpload} /></button> )}
                         <button onClick={() => setIsControlsExpanded(!isControlsExpanded)} className="flex-1 px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-500 hover:bg-slate-100/50 transition-colors"><div className="flex items-center gap-2"><Settings2 size={14} className="text-indigo-500" /><span>背景调整</span></div>{isControlsExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button>
                       </div>
                       {isControlsExpanded && (
@@ -592,24 +476,8 @@ const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   )}
                   <div className="flex flex-col gap-2 mt-2">
-                    <Button 
-                      fullWidth 
-                      variant="primary" 
-                      onClick={handleDownloadAll} 
-                      disabled={screenshotItems.length === 0 || isProcessing || isSaving} 
-                      className="rounded-full h-12 shadow-lg shadow-indigo-200 relative overflow-hidden"
-                    >
-                      {isSaving ? (
-                        <>
-                          <Loader2 size={18} className="mr-2 animate-spin" />
-                          正在保存本地...
-                        </>
-                      ) : (
-                        <>
-                          <Download size={18} className="mr-2" /> 
-                          一键保存至设备 ({displayGrid.filter(d => d.result).length})
-                        </>
-                      )}
+                    <Button fullWidth variant="primary" onClick={handleDownloadAll} disabled={screenshotItems.length === 0 || isProcessing || isSaving} className="rounded-full h-12 shadow-lg shadow-indigo-200 relative overflow-hidden">
+                      {isSaving ? ( <> <Loader2 size={18} className="mr-2 animate-spin" /> 正在保存本地... </> ) : ( <> <Download size={18} className="mr-2" /> 一键保存至设备 ({displayGrid.filter(d => d.result).length}) </> )}
                     </Button>
                     <div className="flex gap-2">
                       <Button fullWidth variant="secondary" onClick={() => fileInputRef.current?.click()} className="rounded-full h-10 bg-white border border-slate-200 flex-1"><Plus size={16} className="mr-2" /> 添加截图<input type="file" ref={fileInputRef} accept="image/*" multiple className="hidden" onChange={handleScreenshotUpload} /></Button>
